@@ -1,0 +1,39 @@
+{
+  "name": "dream-new-11",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Dream New 11 — Create Your Team. Play Your Game.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build:shared": "npm run build -w @dream11/shared",
+    "db:start": "node scripts/dev-db.mjs",
+    "db:migrate": "npm run prisma:migrate -w @dream11/api",
+    "db:seed": "npm run prisma:seed -w @dream11/api",
+    "dev:api": "npm run build:shared && npm run start:dev -w @dream11/api",
+    "dev:mobile": "npm run start -w @dream11/mobile",
+    "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "icons": "node scripts/generate-icons.mjs",
+    "dev:admin": "npm run dev -w @dream11/admin",
+    "build:admin": "npm run build -w @dream11/admin",
+    "docs:api": "node scripts/gen-api-docs.mjs",
+    "docs:schema": "node scripts/gen-schema-docs.mjs"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "devDependencies": {
+    "embedded-postgres": "18.4.0-beta.17",
+    "sharp": "^0.34.5"
+  },
+  "allowScripts": {
+    "@embedded-postgres/windows-x64@18.4.0-beta.17": true,
+    "@prisma/client@6.19.3": true,
+    "prisma@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "esbuild@0.28.2": true
+  }
+}

@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/.expo
+**/*.tsbuildinfo
+.git
+.pgdata
+.env
+.env.*
+!.env.example
+apps/mobile
+apps/api/uploads
+docs/demo
+coverage
+*.log

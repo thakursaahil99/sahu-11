@@ -1,0 +1,758 @@
+// Dream New 11 — database schema.
+// Phase 1: identity, auth, settings, audit. Later phases add sports, teams, contests, wallet.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  SUPER_ADMIN
+  CONTENT_ADMIN
+  SUPPORT
+  FINANCE
+}
+
+enum UserStatus {
+  ACTIVE
+  RESTRICTED
+  SUSPENDED
+  SELF_EXCLUDED
+  DELETED
+}
+
+enum OtpPurpose {
+  LOGIN
+  RESET_PASSWORD
+}
+
+enum OtpChannel {
+  SMS
+  EMAIL
+}
+
+model User {
+  id                String              @id @default(cuid())
+  phone             String?             @unique
+  email             String?             @unique
+  passwordHash      String?
+  name              String
+  dob               DateTime            @db.Date
+  avatarUrl         String?
+  favouriteTeam     String?
+  city              String?
+  /// Declared state of residence (ISO 3166-2:IN code), used to geo-block real-money play.
+  state             String?
+  role              UserRole            @default(USER)
+  status            UserStatus          @default(ACTIVE)
+  phoneVerifiedAt   DateTime?
+  emailVerifiedAt   DateTime?
+  referralCode      String              @unique
+  termsAcceptedAt   DateTime
+  lastLoginAt       DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  settings          UserSettings?
+  refreshTokens     RefreshToken[]
+  auditLogs         AuditLog[]
+  teams             UserTeam[]
+  contestEntries    ContestEntry[]
+  createdContests   Contest[]
+  walletAccounts    WalletAccount[]
+  transactions      WalletTransaction[]
+  kyc               KycRecord?
+  notifications     Notification[]
+  pushTokens        PushToken[]
+  tickets           SupportTicket[]
+  playLimits        PlayLimits?
+  /// Set when the user is restricted by an admin (status RESTRICTED); shown to the user.
+  restrictionReason String?
+  deletedAt         DateTime?
+  /// TOTP secret for staff 2FA, encrypted (AES-256-GCM). Null = not set up.
+  mfaSecret         String?
+  mfaEnabledAt      DateTime?
+  /// Last accepted TOTP time step, so a code can't be replayed.
+  mfaLastStep       Int?
+  riskFlags         RiskFlag[]          @relation("RiskFlagUser")
+
+  @@index([createdAt])
+}
+
+model UserSettings {
+  userId             String   @id
+  pushMatchReminders Boolean  @default(true)
+  pushContestUpdates Boolean  @default(true)
+  pushPromotions     Boolean  @default(false)
+  emailUpdates       Boolean  @default(true)
+  hapticsEnabled     Boolean  @default(true)
+  language           String   @default("en")
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// One-time codes for phone login and password reset. Only an HMAC of the code is stored.
+model OtpCode {
+  id         String     @id @default(cuid())
+  target     String
+  channel    OtpChannel
+  purpose    OtpPurpose
+  codeHash   String
+  attempts   Int        @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  ip         String?
+  createdAt  DateTime   @default(now())
+
+  @@index([target, purpose, createdAt])
+}
+
+/// Opaque rotating refresh tokens. Reuse of a rotated token revokes the whole family.
+model RefreshToken {
+  id           String    @id @default(cuid())
+  userId       String
+  familyId     String
+  tokenHash    String
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?
+  /// "app" for the mobile app, "admin" for admin-panel sessions.
+  scope        String    @default("app")
+  /// Admin sessions: second factor was verified at login.
+  mfa          Boolean   @default(false)
+  userAgent    String?
+  ip           String?
+  createdAt    DateTime  @default(now())
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+}
+
+// ─── Phase 2: sports data ────────────────────────────────────────────────────
+
+enum MatchStatus {
+  UPCOMING
+  LIVE
+  COMPLETED
+  ABANDONED
+}
+
+enum PlayerRole {
+  WK
+  BAT
+  AR
+  BOWL
+}
+
+model Sport {
+  id        String          @id @default(cuid())
+  key       String          @unique
+  name      String
+  enabled   Boolean         @default(true)
+  sortOrder Int             @default(0)
+  series    Series[]
+  teams     Team[]
+  players   Player[]
+  matches   Match[]
+  config    FantasyConfig?
+  scoring   ScoringConfig[]
+}
+
+model Series {
+  id         String    @id @default(cuid())
+  sportId    String
+  provider   String
+  externalId String
+  name       String
+  shortName  String?
+  format     String
+  startDate  DateTime?
+  endDate    DateTime?
+  sport      Sport     @relation(fields: [sportId], references: [id])
+  matches    Match[]
+
+  @@unique([provider, externalId])
+}
+
+model Team {
+  id          String        @id @default(cuid())
+  sportId     String
+  provider    String
+  externalId  String
+  name        String
+  shortName   String
+  logoUrl     String?
+  /// Brand colour used for the generated badge when there is no logo.
+  color       String        @default("#4DA3FF")
+  sport       Sport         @relation(fields: [sportId], references: [id])
+  players     Player[]
+  homeMatches Match[]       @relation("HomeTeam")
+  awayMatches Match[]       @relation("AwayTeam")
+  matchSquads MatchPlayer[]
+
+  @@unique([provider, externalId])
+}
+
+model Player {
+  id            String              @id @default(cuid())
+  sportId       String
+  teamId        String?
+  provider      String
+  externalId    String
+  name          String
+  shortName     String
+  role          PlayerRole
+  /// Default fantasy credits ×10 (85 = 8.5 credits).
+  creditsX10    Int                 @default(80)
+  imageUrl      String?
+  battingStyle  String?
+  bowlingStyle  String?
+  country       String?
+  /// Career / recent-form snapshot from the provider (see PlayerStatsDto).
+  stats         Json?
+  sport         Sport               @relation(fields: [sportId], references: [id])
+  team          Team?               @relation(fields: [teamId], references: [id])
+  matchSquads   MatchPlayer[]
+  inTeams       UserTeamPlayer[]
+  matchPoints   PlayerMatchPoints[]
+  captainOf     UserTeam[]          @relation("Captain")
+  viceCaptainOf UserTeam[]          @relation("ViceCaptain")
+
+  @@unique([provider, externalId])
+  @@index([teamId])
+}
+
+model Match {
+  id               String              @id @default(cuid())
+  sportId          String
+  seriesId         String
+  provider         String
+  externalId       String
+  homeTeamId       String
+  awayTeamId       String
+  venue            String
+  city             String?
+  format           String
+  startTime        DateTime
+  status           MatchStatus         @default(UPCOMING)
+  /// Short human text from the provider, e.g. "Toss: MUM chose to bat" or the result.
+  statusNote       String?
+  lineupsAnnounced Boolean             @default(false)
+  squadSyncedAt    DateTime?
+  lastSyncedAt     DateTime            @default(now())
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  sport            Sport               @relation(fields: [sportId], references: [id])
+  series           Series              @relation(fields: [seriesId], references: [id])
+  homeTeam         Team                @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  awayTeam         Team                @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  squad            MatchPlayer[]
+  userTeams        UserTeam[]
+  contests         Contest[]
+  liveState        MatchLiveState?
+  playerPoints     PlayerMatchPoints[]
+
+  @@unique([provider, externalId])
+  @@index([sportId, status, startTime])
+}
+
+/// A player's availability and price for one specific match.
+model MatchPlayer {
+  matchId    String
+  playerId   String
+  teamId     String
+  role       PlayerRole
+  creditsX10 Int
+  /// null until lineups are announced, then true/false.
+  isPlaying  Boolean?
+  match      Match      @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player     Player     @relation(fields: [playerId], references: [id])
+  team       Team       @relation(fields: [teamId], references: [id])
+
+  @@id([matchId, playerId])
+  @@index([matchId, teamId])
+}
+
+// ─── Phase 3: fantasy teams ──────────────────────────────────────────────────
+
+/// Team-building rules per sport, editable by admins. Decimals are stored as integers.
+model FantasyConfig {
+  sportId                   String   @id
+  teamSize                  Int      @default(11)
+  maxCreditsX10             Int      @default(1000)
+  maxPerTeam                Int      @default(7)
+  minWk                     Int      @default(1)
+  maxWk                     Int      @default(4)
+  minBat                    Int      @default(3)
+  maxBat                    Int      @default(6)
+  minAr                     Int      @default(1)
+  maxAr                     Int      @default(4)
+  minBowl                   Int      @default(3)
+  maxBowl                   Int      @default(6)
+  maxTeamsPerMatch          Int      @default(6)
+  captainMultiplierX100     Int      @default(200)
+  viceCaptainMultiplierX100 Int      @default(150)
+  updatedById               String?
+  updatedAt                 DateTime @updatedAt
+  sport                     Sport    @relation(fields: [sportId], references: [id])
+}
+
+model UserTeam {
+  id            String           @id @default(cuid())
+  userId        String
+  matchId       String
+  /// 1-based per user per match: T1, T2, …
+  teamNumber    Int
+  captainId     String
+  viceCaptainId String
+  /// Total credits ×10 at the time of saving.
+  creditsX10    Int
+  /// Sorted player ids + leaders; blocks saving the same team twice.
+  signature     String
+  /// Live fantasy points ×10, including captain/vice-captain multipliers.
+  pointsX10     Int              @default(0)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  match         Match            @relation(fields: [matchId], references: [id])
+  captain       Player           @relation("Captain", fields: [captainId], references: [id])
+  viceCaptain   Player           @relation("ViceCaptain", fields: [viceCaptainId], references: [id])
+  players       UserTeamPlayer[]
+  entries       ContestEntry[]
+
+  @@unique([userId, matchId, teamNumber])
+  @@unique([userId, matchId, signature])
+  @@index([matchId])
+}
+
+/// A player in a saved team, with the role and price locked at save time.
+model UserTeamPlayer {
+  teamId     String
+  playerId   String
+  /// The real-world side the player represented in this match.
+  sideTeamId String
+  role       PlayerRole
+  creditsX10 Int
+  team       UserTeam   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  player     Player     @relation(fields: [playerId], references: [id])
+
+  @@id([teamId, playerId])
+  @@index([playerId])
+}
+
+// ─── Phase 4: contests ───────────────────────────────────────────────────────
+
+enum ContestType {
+  PRACTICE
+  FREE
+  PRIVATE
+  PUBLIC
+}
+
+enum ContestStatus {
+  OPEN
+  LOCKED
+  COMPLETED
+  CANCELLED
+}
+
+/// NONE = bragging rights, DEMO = demo credits (no cash value), INR = real money.
+enum PrizeCurrency {
+  NONE
+  DEMO
+  INR
+}
+
+model Contest {
+  id                String         @id @default(cuid())
+  matchId           String
+  type              ContestType
+  name              String
+  status            ContestStatus  @default(OPEN)
+  /// Money amounts are stored ×100 (paise / hundredths of a demo credit).
+  entryFeeX100      Int            @default(0)
+  prizePoolX100     Int            @default(0)
+  currency          PrizeCurrency  @default(NONE)
+  totalSpots        Int
+  /// Kept in step with entries inside the join transaction; a CHECK constraint forbids overfill.
+  filledSpots       Int            @default(0)
+  maxEntriesPerUser Int            @default(1)
+  /// Guaranteed contests run even if not full; others are cancelled at the deadline.
+  guaranteed        Boolean        @default(false)
+  /// [{ fromRank, toRank, amountX100 }]
+  prizeBreakup      Json           @default("[]")
+  inviteCode        String?        @unique
+  createdById       String?
+  /// Set for auto-created contests so each template is created once per match.
+  templateKey       String?
+  cancelReason      String?
+  /// Set when final ranks and winnings were written after the match.
+  settledAt         DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  match             Match          @relation(fields: [matchId], references: [id])
+  createdBy         User?          @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  entries           ContestEntry[]
+
+  @@unique([matchId, templateKey])
+  @@index([matchId, status])
+}
+
+model ContestEntry {
+  id           String   @id @default(cuid())
+  contestId    String
+  userId       String
+  teamId       String
+  /// Fantasy points ×10 (vice-captain 1.5x can produce halves).
+  pointsX10    Int      @default(0)
+  rank         Int?
+  winningsX100 Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  contest      Contest  @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team         UserTeam @relation(fields: [teamId], references: [id])
+
+  @@unique([contestId, teamId])
+  @@index([userId])
+  @@index([contestId, pointsX10])
+}
+
+// ─── Phase 5: live scoring ───────────────────────────────────────────────────
+
+/// Points table per sport and format (see ScoringRules in packages/shared). Editable by admins.
+model ScoringConfig {
+  id          String   @id @default(cuid())
+  sportId     String
+  format      String
+  rules       Json
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+  sport       Sport    @relation(fields: [sportId], references: [id])
+
+  @@unique([sportId, format])
+}
+
+/// Latest scorecard snapshot for a started match.
+model MatchLiveState {
+  matchId   String   @id
+  /// { innings, recentBalls }
+  state     Json
+  /// Hash of the provider payload; unchanged payloads skip recomputation.
+  hash      String
+  final     Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+}
+
+/// A player's real stats and base fantasy points in one match.
+model PlayerMatchPoints {
+  matchId   String
+  playerId  String
+  stats     Json
+  /// Base points ×10, before captain / vice-captain multipliers.
+  pointsX10 Int      @default(0)
+  /// [{ key, label, detail, points }]
+  breakdown Json
+  updatedAt DateTime @updatedAt
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player    Player   @relation(fields: [playerId], references: [id])
+
+  @@id([matchId, playerId])
+}
+
+// ─── Phase 6: wallet (double-entry ledger) ───────────────────────────────────
+
+/// Currency of a wallet. DEMO credits have no cash value and never convert to INR.
+enum WalletCurrency {
+  DEMO
+  INR
+}
+
+/// Balance bucket. Winnings are withdrawable; bonus is play-only; deposited is spendable.
+enum WalletBucket {
+  DEPOSITED
+  WINNINGS
+  BONUS
+}
+
+enum TxType {
+  DEPOSIT
+  WITHDRAWAL
+  CONTEST_ENTRY
+  CONTEST_WINNING
+  REFUND
+  BONUS
+  ADJUSTMENT
+}
+
+enum TxStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum KycStatus {
+  NOT_STARTED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+/// A ledger account. Users own one per currency; SYSTEM accounts are the other side of every entry.
+model WalletAccount {
+  id       String         @id @default(cuid())
+  /// null for SYSTEM accounts.
+  userId   String?
+  /// e.g. USER, SYSTEM:DEMO_ISSUER, SYSTEM:PRIZES, SYSTEM:PAYMENTS, SYSTEM:PAYOUT_HOLD
+  code     String
+  currency WalletCurrency
+  user     User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries  LedgerEntry[]
+
+  @@unique([userId, code, currency])
+  @@index([code, currency])
+}
+
+/// What the user sees in their history. Its ledger entries always sum to zero.
+model WalletTransaction {
+  id             String         @id @default(cuid())
+  userId         String
+  type           TxType
+  status         TxStatus
+  currency       WalletCurrency
+  /// Signed from the user's point of view (+ credit, − debit), ×100.
+  amountX100     Int
+  /// Unique per real-world event (e.g. "win:<entryId>", a payment id) — makes every credit idempotent.
+  idempotencyKey String         @unique
+  /// contestId, payment order id, withdrawal id…
+  reference      String?
+  description    String
+  metadata       Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries        LedgerEntry[]
+
+  @@index([userId, createdAt])
+  @@index([reference])
+}
+
+model LedgerEntry {
+  id            String            @id @default(cuid())
+  transactionId String
+  accountId     String
+  bucket        WalletBucket
+  /// Signed amount ×100; entries of one transaction sum to zero.
+  amountX100    Int
+  createdAt     DateTime          @default(now())
+  transaction   WalletTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  account       WalletAccount     @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, bucket])
+}
+
+/// Minimal KYC record required before withdrawals. PAN is stored masked; verification is by admins.
+model KycRecord {
+  userId      String    @id
+  status      KycStatus @default(PENDING)
+  fullName    String
+  panMasked   String
+  /// SHA-256 of the full PAN, to detect one PAN across multiple accounts.
+  panHash     String
+  reviewNote  String?
+  submittedAt DateTime  @default(now())
+  reviewedAt  DateTime?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([panHash])
+}
+
+// ─── Phase 7: notifications, support, responsible play ──────────────────────
+
+enum NotificationType {
+  MATCH_REMINDER
+  MATCH_START
+  CONTEST_JOINED
+  CONTEST_RESULT
+  CONTEST_CANCELLED
+  TRANSACTION
+  KYC
+  SUPPORT
+  ANNOUNCEMENT
+}
+
+/// In-app notification centre. Push is a delivery channel on top of this.
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  /// In-app route opened on tap, e.g. /contest/abc.
+  url       String?
+  /// Makes scheduled/triggered notifications idempotent per user (e.g. reminder:<matchId>).
+  dedupeKey String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, readAt])
+}
+
+enum PushPlatform {
+  ANDROID
+  IOS
+  WEB
+}
+
+enum PushTokenKind {
+  EXPO
+  FCM
+}
+
+model PushToken {
+  id         String        @id @default(cuid())
+  userId     String
+  token      String        @unique
+  kind       PushTokenKind
+  platform   PushPlatform
+  lastSeenAt DateTime      @default(now())
+  createdAt  DateTime      @default(now())
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum TicketCategory {
+  ACCOUNT
+  PAYMENTS
+  CONTESTS
+  KYC
+  TECHNICAL
+  OTHER
+}
+
+enum TicketStatus {
+  OPEN
+  AWAITING_USER
+  RESOLVED
+  CLOSED
+}
+
+model SupportTicket {
+  id            String           @id @default(cuid())
+  /// Human-friendly reference shown to the user, e.g. DN-48213.
+  reference     String           @unique
+  userId        String
+  category      TicketCategory
+  subject       String
+  status        TicketStatus     @default(OPEN)
+  lastMessageAt DateTime         @default(now())
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  user          User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  messages      SupportMessage[]
+
+  @@index([userId, lastMessageAt(sort: Desc)])
+  @@index([status, lastMessageAt])
+}
+
+model SupportMessage {
+  id        String        @id @default(cuid())
+  ticketId  String
+  /// Null for the user; the staff member for replies.
+  staffId   String?
+  fromStaff Boolean       @default(false)
+  body      String
+  createdAt DateTime      @default(now())
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+}
+
+/// Responsible-play settings. Lowering a limit applies now; raising or removing one waits a cooling-off period.
+model PlayLimits {
+  userId             String    @id
+  dailyDepositX100   Int?
+  weeklyDepositX100  Int?
+  monthlyDepositX100 Int?
+  /// A requested increase/removal: {"daily": 500000 | null, ...}; applied at pendingEffectiveAt.
+  pending            Json?
+  pendingEffectiveAt DateTime?
+  /// Take-a-break / self-exclusion end. Cannot be shortened.
+  excludedUntil      DateTime?
+  updatedAt          DateTime  @updatedAt
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── Phase 8: admin ─────────────────────────────────────────────────────────
+
+enum RiskKind {
+  MULTI_ACCOUNT_IP
+  RAPID_DEPOSITS
+  QUICK_WITHDRAWAL
+  PAN_REUSE
+}
+
+enum RiskStatus {
+  OPEN
+  DISMISSED
+  ACTIONED
+}
+
+/// Suspicious-activity flags raised by the risk scanner for staff review.
+model RiskFlag {
+  id           String     @id @default(cuid())
+  userId       String
+  kind         RiskKind
+  /// One flag per user + kind + window (e.g. the IP, or the day), so rescans don't duplicate.
+  dedupeKey    String
+  details      Json
+  status       RiskStatus @default(OPEN)
+  note         String?
+  resolvedById String?
+  resolvedAt   DateTime?
+  createdAt    DateTime   @default(now())
+  user         User       @relation("RiskFlagUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, kind, dedupeKey])
+  @@index([status, createdAt])
+}
+
+model Announcement {
+  id          String   @id @default(cuid())
+  title       String
+  body        String
+  url         String?
+  audience    String
+  promotional Boolean  @default(false)
+  recipients  Int      @default(0)
+  createdById String
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+}

@@ -1,0 +1,59 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --color-bg: #0a1128;
+  --color-bg-deep: #060b1c;
+  --color-card: #121c3d;
+  --color-raised: #1a2652;
+  --color-line: #24305c;
+  --color-line-strong: #34437a;
+  --color-accent: #22e06b;
+  --color-accent-deep: #14b856;
+  --color-text: #f5f7ff;
+  --color-muted: #93a0c8;
+  --color-faint: #5b668e;
+  --color-danger: #ff5a6e;
+  --color-warning: #ffb547;
+  --color-info: #4da3ff;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-bg-deep font-sans text-text antialiased;
+  }
+  ::selection {
+    @apply bg-accent/30;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent;
+  }
+  input,
+  select,
+  textarea {
+    color-scheme: dark;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-line bg-card;
+  }
+  .input {
+    @apply h-10 w-full rounded-xl border border-line bg-bg px-3 text-sm text-text placeholder:text-faint transition focus:border-accent focus:outline-none;
+  }
+  .label {
+    @apply mb-1.5 block text-xs font-semibold tracking-wide text-muted uppercase;
+  }
+  .th {
+    @apply px-4 py-2.5 text-left text-[11px] font-semibold tracking-wider text-faint uppercase;
+  }
+  .td {
+    @apply px-4 py-3 text-sm;
+  }
+}
